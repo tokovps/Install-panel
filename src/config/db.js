@@ -102,6 +102,32 @@ export const db = {
 
   // --- SETTINGS OPERATIONS ---
   getSettings: async () => {
+    if (!isMongoConnected) {
+      logger.warn('[DB] MongoDB is not connected. Returning default fallback settings.');
+      return {
+        key: 'global',
+        payment: {
+          autogopay: {
+            apiKey: "",
+            qrisString: "",
+            webhook: "/webhook/autogopay",
+            enabled: false
+          }
+        },
+        prices: {
+          pterodactyl: 2000,
+          mysql: 2000
+        },
+        bot: {
+          maintenance: false,
+          maintenanceMessage: "Bot sedang dalam perawatan / maintenance.",
+          forceJoin: [],
+          contact: "",
+          channel: "",
+          storeName: "AutoInstaller Bot"
+        }
+      };
+    }
     let settings = await Settings.findOne({ key: 'global' });
     if (!settings) {
       settings = new Settings({

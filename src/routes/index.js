@@ -18,25 +18,38 @@ router.get('/api/health', async (req, res) => {
   }
 });
 
-// --- API ROUTE: AutoGoPay Webhook ---
-router.post('/api/webhooks/gopay', async (req, res) => {
-  // Comprehensive detailed log of incoming webhook headers and body
-  logger.info('[WEBHOOK MASUK] AutoGoPay Webhook Triggered');
-  logger.info(`[WEBHOOK MASUK] Headers: ${JSON.stringify(req.headers, null, 2)}`);
-  logger.info(`[WEBHOOK MASUK] Parsed Body: ${JSON.stringify(req.body, null, 2)}`);
-  logger.info(`[WEBHOOK MASUK] Raw Body Length: ${req.rawBody ? req.rawBody.length : 0} bytes`);
+// --- GET ROUTE: Webhook Verification / Ready Check ---
+router.get('/webhook/autogopay', (req, res) => {
+  logger.info(`[WEBHOOK AUDIT - GET] Method: ${req.method} | URL: ${req.originalUrl} | Status: 200`);
+  return res.status(200).send('Webhook Ready');
+});
+
+// --- API ROUTE: AutoGoPay Webhook Handler Function ---
+async function handleAutoGoPayWebhook(req, res) {
+  const method = req.method;
+  const url = req.originalUrl;
+  const headers = req.headers;
+  const body = req.body || {};
+  
+  // Retrieve signature safely (case-insensitive check)
+  const signature = headers['x-signature'] || headers['X-Signature'] || headers['x-signature-hex'] || headers['x-gopay-signature'];
+
+  logger.info(`[WEBHOOK MASUK] AutoGoPay Webhook Triggered`);
+  logger.info(`[WEBHOOK MASUK] METHOD: ${method}`);
+  logger.info(`[WEBHOOK MASUK] URL: ${url}`);
+  logger.info(`[WEBHOOK MASUK] Headers: ${JSON.stringify(headers, null, 2)}`);
+  logger.info(`[WEBHOOK MASUK] Body: ${JSON.stringify(body, null, 2)}`);
+  logger.info(`[WEBHOOK MASUK] Signature: ${signature}`);
 
   try {
     const settings = await db.getSettings();
     const gopay = settings.payment?.autogopay || {};
-
-    // Retrieve signature safely (case-insensitive check)
-    const signature = req.headers['x-signature'] || req.headers['X-Signature'] || req.headers['x-signature-hex'] || req.headers['x-gopay-signature'];
     
     // Check if live API Key check is active and required
     if (gopay.apiKey && typeof gopay.apiKey === 'string' && gopay.apiKey.trim() !== '' && gopay.apiKey !== 'gopay_test_key_123' && gopay.enabled) {
       if (!signature) {
         logger.warn('[WEBHOOK MASUK] Rejected: Missing X-Signature header.');
+        logger.info(`[WEBHOOK RESPON] Status: 401 | Message: Unauthorized: Missing X-Signature header`);
         return res.status(401).json({ 
           success: false, 
           error: 'Unauthorized: Missing X-Signature header' 
@@ -68,6 +81,7 @@ router.post('/api/webhooks/gopay', async (req, res) => {
 
       if (!isValidSignature) {
         logger.warn('[WEBHOOK MASUK] Rejected: Signature verification failed.');
+        logger.info(`[WEBHOOK RESPON] Status: 401 | Message: Unauthorized: Invalid X-Signature verification`);
         return res.status(401).json({ 
           success: false, 
           error: 'Unauthorized: Invalid X-Signature verification' 
@@ -78,30 +92,32 @@ router.post('/api/webhooks/gopay', async (req, res) => {
       logger.info('[WEBHOOK MASUK] Bypassing signature validation (Running in test mode or API Key not configured / enabled).');
     }
 
-    // Safety fallback for empty request body
-    const requestBody = req.body || {};
-
     // Process webhook logic
-    const result = await AutoGoPayService.processWebhook(requestBody);
+    const result = await AutoGoPayService.processWebhook(body);
     
     logger.info('[WEBHOOK MASUK] Webhook processed successfully. Result:', result);
+    logger.info(`[WEBHOOK RESPON] Status: 200 | Body: ${JSON.stringify(result)}`);
     return res.status(200).json(result);
 
   } catch (err) {
     // Log the entire error stack as requested
     logger.error('[WEBHOOK MASUK] CRITICAL ERROR / EXCEPTION caught in route try-catch:', err);
     if (err.stack) {
-      logger.error(`[WEBHOOK MASUK] Error Stack: ${err.stack}`);
+      logger.error(`[WEBHOOK MASUK] Stack Error: ${err.stack}`);
     }
 
-    // Never return 500 to third parties unless truly an unrecoverable server failure.
-    // Instead return a successful error payload or a client error depending on nature.
+    // Return 200 with success: false to signal handled exception, rather than server crashing
+    logger.info(`[WEBHOOK RESPON] Status: 200 | Body: { success: false, error: "Exception occurred", ... }`);
     return res.status(200).json({ 
       success: false, 
       error: 'Exception occurred but gracefully handled', 
       message: err.message 
     });
   }
-});
+}
+
+// Mount webhook handler to both preferred paths to prevent breaking existing and new systems
+router.post('/webhook/autogopay', handleAutoGoPayWebhook);
+router.post('/api/webhooks/gopay', handleAutoGoPayWebhook);
 
 export default router;

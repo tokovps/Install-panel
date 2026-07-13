@@ -283,6 +283,11 @@ Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
   processWebhook: async (body) => {
     logger.info('[WEBHOOK MASUK] Processing AutoGoPay webhook body:', body);
 
+    if (!db.isMongo()) {
+      logger.warn('[WEBHOOK MASUK] MongoDB is not connected! Returning simulated successful response.');
+      return { success: true, message: 'Simulated webhook processing: DB offline' };
+    }
+
     const event = body.event || '';
     const status = (body.status || (body.data && body.data.status) || '').toLowerCase();
     const transactionId = body.transaction_id || body.transactionId || (body.data && (body.data.transaction_id || body.data.id)) || '';
