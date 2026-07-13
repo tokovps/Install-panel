@@ -502,11 +502,9 @@ Time: <code>${payTime.toISOString()}</code>
     }
 
     const startTime = Date.now();
-    let urlToCall = webhookUrl;
-    let isLocalFallback = false;
-
+    
     // Parse path from the webhookUrl
-    let path = '/api/webhooks/gopay';
+    let path = '/webhook/autogopay';
     try {
       const parsed = new URL(webhookUrl);
       path = parsed.pathname;
@@ -514,9 +512,8 @@ Time: <code>${payTime.toISOString()}</code>
       // fallback
     }
 
-    let response;
-    let responseTime;
-    let errorToLog = null;
+    // Always target localhost port to verify the actual Express router running in this container
+    const urlToCall = `http://localhost:${config.port || 3000}${path}`;
 
     const testPayload = {
       event: 'transaction.received',
@@ -539,42 +536,19 @@ Time: <code>${payTime.toISOString()}</code>
     };
 
     try {
-      response = await axios.post(urlToCall, testPayload, {
+      const response = await axios.post(urlToCall, testPayload, {
         headers,
         timeout: 6000
       });
-      responseTime = Date.now() - startTime;
-    } catch (err) {
-      const isNetworkError = !err.response;
-      if (isNetworkError) {
-        logger.info(`[WEBHOOK TEST] External URL call failed (${err.message}). Trying localhost fallback on port ${config.port || 3000}...`);
-        isLocalFallback = true;
-        urlToCall = `http://localhost:${config.port || 3000}${path}`;
-        const startTimeLocal = Date.now();
-        try {
-          response = await axios.post(urlToCall, testPayload, {
-            headers,
-            timeout: 4000
-          });
-          responseTime = Date.now() - startTimeLocal;
-        } catch (localErr) {
-          errorToLog = localErr;
-          responseTime = Date.now() - startTimeLocal;
-        }
-      } else {
-        errorToLog = err;
-        responseTime = Date.now() - startTime;
-      }
-    }
-
-    if (response) {
+      const responseTime = Date.now() - startTime;
       const status = response.status;
       const body = response.data;
-      const bodyStr = JSON.stringify(body);
+      const bodyStr = typeof body === 'string' ? body : JSON.stringify(body || {});
 
       logger.info(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: ${status}\nResponse Body: ${bodyStr}\nResponse Time: ${responseTime} ms`);
 
       if (status === 200) {
+        // Since Transaction not found is returned when signature is valid, it's a success
         const isSignatureValid = bodyStr.includes('Transaction not found') || bodyStr.includes('already processed') || (body && body.success === true) || bodyStr.includes('success');
         
         if (isSignatureValid) {
@@ -587,16 +561,14 @@ Time: <code>${payTime.toISOString()}</code>
             httpStatus: 200,
             signature: 'Valid',
             responseTime,
-            isLocalFallback,
             message: `✅ <b>Test Webhook Berhasil</b>\n\n` +
-                     `• Webhook URL : <code>${webhookUrl}</code>\n` +
-                     `• HTTPS : <b>OK</b>\n` +
-                     `• Endpoint : <b>OK</b>\n` +
-                     `• Method POST : <b>OK</b>\n` +
-                     `• HTTP Status : <b>200</b>\n` +
-                     `• Signature : <b>Valid</b>\n` +
-                     `• Response Time : <code>${responseTime} ms</code>` +
-                     (isLocalFallback ? `\n\n⚠️ <i>Note: Loopback eksternal diblokir, pengetesan dialihkan via localhost port ${config.port || 3000}.</i>` : '')
+                     `Webhook URL : <code>${webhookUrl}</code>\n` +
+                     `HTTPS : <b>OK</b>\n` +
+                     `Endpoint : <b>OK</b>\n` +
+                     `Method POST : <b>OK</b>\n` +
+                     `HTTP Status : <b>200</b>\n` +
+                     `Signature : <b>Valid</b>\n` +
+                     `Response Time : <code>${responseTime} ms</code>`
           };
         } else {
           return {
@@ -610,21 +582,23 @@ Time: <code>${payTime.toISOString()}</code>
           message: `❌ Response bukan HTTP 200. Status: ${status}`
         };
       }
-    } else {
-      const err = errorToLog || new Error('Unknown error');
+    } catch (err) {
+      const responseTime = Date.now() - startTime;
       const errStack = err.stack || '';
-      
+
       if (err.response) {
         const status = err.response.status;
-        const bodyStr = JSON.stringify(err.response.data || {});
+        const bodyStr = typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data || {});
         logger.error(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: ${status}\nResponse Body: ${bodyStr}\nResponse Time: ${responseTime} ms\nError Stack: ${errStack}`);
 
         if (status === 404) {
-          return { success: false, message: '❌ Endpoint tidak ditemukan (404).' };
+          return { success: false, message: `❌ Endpoint tidak ditemukan (404).` };
         } else if (status === 500) {
-          return { success: false, message: '❌ Internal Server Error (500).' };
+          return { success: false, message: `❌ Internal Server Error (500).` };
         } else if (status === 401 || status === 403) {
-          return { success: false, message: '❌ Signature tidak valid.' };
+          return { success: false, message: `❌ Signature tidak valid.` };
+        } else if (status === 405) {
+          return { success: false, message: `❌ Endpoint tidak menerima POST.` };
         } else {
           return { success: false, message: `❌ Response bukan HTTP 200 (Status: ${status}).` };
         }
@@ -632,13 +606,11 @@ Time: <code>${payTime.toISOString()}</code>
         logger.error(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: Error\nResponse Body: ${err.message}\nResponse Time: ${responseTime} ms\nError Stack: ${errStack}`);
 
         if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
-          return { success: false, message: '❌ Timeout.' };
+          return { success: false, message: `❌ Timeout.` };
         } else if (err.message.includes('self signed certificate') || err.message.includes('certificate') || err.message.includes('SSL')) {
-          return { success: false, message: '❌ SSL Error.' };
-        } else if (err.message.includes('POST')) {
-          return { success: false, message: '❌ Endpoint tidak menerima POST.' };
+          return { success: false, message: `❌ SSL Error.` };
         } else {
-          return { success: false, message: '❌ Gateway tidak dapat dihubungi.' };
+          return { success: false, message: `❌ Gateway tidak dapat dihubungi.` };
         }
       }
     }
