@@ -124,7 +124,7 @@ async function startServer() {
   });
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && (!process.argv[1] || !process.argv[1].includes('test'))) {
   startServer();
 }
 

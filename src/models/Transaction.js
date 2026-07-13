@@ -13,6 +13,8 @@ const TransactionSchema = new mongoose.Schema({
   transaction_status: { type: String, default: '' },
   expiry_time: { type: Date, default: null },
   checkout_url: { type: String, default: '' },
+  paidAt: { type: Date, default: null },
+  paymentResponse: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

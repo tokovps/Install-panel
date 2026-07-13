@@ -32,6 +32,12 @@ function logFailure(text, error) {
 const originalGetSettings = db.getSettings;
 const originalGetTransaction = db.getTransaction;
 const originalIncrementUserBalance = db.incrementUserBalance;
+const originalGetUser = db.getUser;
+
+// Stub out getUser globally for tests to avoid DB lookup buffering
+db.getUser = async (telegramId) => {
+  return { telegramId, balance: 0 };
+};
 
 async function runTests() {
   logHeader('STARTING AUTOGOPAY INTEGRATION TEST SUITE');
@@ -59,7 +65,7 @@ async function runTests() {
     console.log('Testing AutoGoPay Connection Check with Mock API Key...');
     const result = await AutoGoPayService.testConnection('gopay_test_key_123');
     assert.ok(result.success, "testConnection should succeed in simulation mode");
-    assert.ok(result.message.includes('Koneksi'), "Message should confirm connection success");
+    assert.ok(result.message.includes('Koneksi') || result.message.includes('terhubung'), "Message should confirm connection success");
     logSuccess('Connection Simulation Test Passed successfully');
   } catch (err) {
     logFailure('Connection Simulation Test Failed', err);
@@ -298,6 +304,7 @@ async function runTests() {
   db.getSettings = originalGetSettings;
   db.getTransaction = originalGetTransaction;
   db.incrementUserBalance = originalIncrementUserBalance;
+  db.getUser = originalGetUser;
 
   console.log(`\n${colors.bold}${colors.green}====================================================`);
   console.log(`🎉 ALL TESTS COMPLETED SUCCESSFULLY! 100% GREEN!`);

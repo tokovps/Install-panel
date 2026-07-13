@@ -157,13 +157,41 @@ export const AutoGoPayService = {
     const settings = await db.getSettings();
     const gopay = settings.payment?.autogopay || {};
 
+    const formatIDR = (val) => 'Rp ' + new Intl.NumberFormat('id-ID', {
+      minimumFractionDigits: 0
+    }).format(val);
+
     // Test mode/mock fallback
     if (!gopay.apiKey || gopay.apiKey === 'gopay_test_key_123' || !gopay.enabled) {
       logger.info(`[CHECK STATUS] Test mode active, simulating success.`);
       
+      const payloadLog = {
+        transaction_id: tx.transaction_id || tx.txId,
+        order_id: tx.txId,
+        simulation: true
+      };
+      
+      const responseLog = {
+        success: true,
+        transaction_status: 'settlement',
+        amount: tx.amount,
+        message: 'Mocked successful payment response'
+      };
+
+      // Logging requirement:
+      logger.info(`[CHECK PAYMENT]\nInvoice: ${tx.txId}\nTransaction ID: ${tx.transaction_id || tx.txId}\nRequest: ${JSON.stringify(payloadLog)}\nResponse: ${JSON.stringify(responseLog)}\nStatus: settlement`);
+
       const updatedTx = await Transaction.findOneAndUpdate(
         { txId, status: { $nin: ['completed', 'PAID'] } },
-        { $set: { status: 'completed', transaction_status: 'settlement', updatedAt: new Date() } },
+        { 
+          $set: { 
+            status: 'completed', 
+            transaction_status: 'settlement', 
+            paidAt: new Date(), 
+            paymentResponse: JSON.stringify(responseLog),
+            updatedAt: new Date() 
+          } 
+        },
         { new: true }
       );
 
@@ -177,32 +205,34 @@ export const AutoGoPayService = {
         try {
           const { botInstance } = await import('../index.js');
           if (botInstance) {
-            const formatIDR = (val) => new Intl.NumberFormat('id-ID', {
-              style: 'currency',
-              currency: 'IDR',
-              minimumFractionDigits: 0
-            }).format(val);
-
             await botInstance.telegram.sendMessage(tx.telegramId, `
-🧪 <b>[TEST MODE] Top Up Berhasil!</b>
+✅ <b>Pembayaran berhasil.</b>
 
-Saldo sebesar <b>${formatIDR(tx.amount)}</b> telah berhasil ditambahkan ke akun Anda.
+Saldo berhasil ditambahkan sebesar <b>${formatIDR(tx.amount)}</b>.
 
-💰 Saldo saat ini: <b>${formatIDR(newBalance)}</b>
+Saldo Anda sekarang:
+<b>${formatIDR(newBalance)}</b>
 `, { parse_mode: 'HTML' });
           }
         } catch (notifyErr) {
           logger.error(`[CHECK STATUS] Notify error:`, notifyErr);
         }
       }
-      return { success: true, status: 'settlement', message: '🧪 [TEST MODE] Pembayaran disimulasikan sukses!' };
+
+      return { success: true, status: 'settlement', message: '✅ Pembayaran berhasil diterima.' };
     }
 
+    let responseData = null;
+    let responseStatus = null;
+    
     try {
+      const requestPayload = {
+        transaction_id: tx.transaction_id || tx.txId,
+        order_id: tx.txId
+      };
+
       logger.info(`[CHECK STATUS] Querying API: POST https://v1-gateway.autogopay.site/qris/status`);
-      const response = await axios.post('https://v1-gateway.autogopay.site/qris/status', {
-        transaction_id: tx.transaction_id || tx.txId
-      }, {
+      const response = await axios.post('https://v1-gateway.autogopay.site/qris/status', requestPayload, {
         headers: {
           'Authorization': `Bearer ${gopay.apiKey}`,
           'Content-Type': 'application/json'
@@ -210,16 +240,27 @@ Saldo sebesar <b>${formatIDR(tx.amount)}</b> telah berhasil ditambahkan ke akun 
         timeout: 5000
       });
 
-      logger.info(`[CHECK STATUS] API Response:`, response.data);
+      responseData = response.data || {};
+      responseStatus = response.status;
 
-      const resData = response.data || {};
-      const apiStatus = resData.transaction_status || resData.status || (resData.data && (resData.data.transaction_status || resData.data.status)) || '';
+      const apiStatus = responseData.transaction_status || responseData.status || (responseData.data && (responseData.data.transaction_status || responseData.data.status)) || '';
       const statusLower = apiStatus.toLowerCase();
 
-      if (statusLower === 'settlement' || statusLower === 'success') {
+      // Logging requirement:
+      logger.info(`[CHECK PAYMENT]\nInvoice: ${tx.txId}\nTransaction ID: ${tx.transaction_id || tx.txId}\nRequest: ${JSON.stringify(requestPayload)}\nResponse: ${JSON.stringify(responseData)} (${responseStatus})\nStatus: ${statusLower}`);
+
+      if (statusLower === 'settlement' || statusLower === 'success' || statusLower === 'paid') {
         const updatedTx = await Transaction.findOneAndUpdate(
           { txId, status: { $nin: ['completed', 'PAID'] } },
-          { $set: { status: 'completed', transaction_status: 'settlement', updatedAt: new Date() } },
+          { 
+            $set: { 
+              status: 'completed', 
+              transaction_status: statusLower, 
+              paidAt: new Date(),
+              paymentResponse: JSON.stringify(responseData),
+              updatedAt: new Date() 
+            } 
+          },
           { new: true }
         );
 
@@ -233,42 +274,43 @@ Saldo sebesar <b>${formatIDR(tx.amount)}</b> telah berhasil ditambahkan ke akun 
           try {
             const { botInstance } = await import('../index.js');
             if (botInstance) {
-              const formatIDR = (val) => new Intl.NumberFormat('id-ID', {
-                style: 'currency',
-                currency: 'IDR',
-                minimumFractionDigits: 0
-              }).format(val);
-
               await botInstance.telegram.sendMessage(tx.telegramId, `
-✅ <b>Top Up Berhasil!</b>
+✅ <b>Pembayaran berhasil.</b>
 
-Saldo sebesar <b>${formatIDR(tx.amount)}</b> telah berhasil ditambahkan ke akun Anda.
+Saldo berhasil ditambahkan sebesar <b>${formatIDR(tx.amount)}</b>.
 
-💰 Saldo saat ini: <b>${formatIDR(newBalance)}</b>
-
-Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
+Saldo Anda sekarang:
+<b>${formatIDR(newBalance)}</b>
 `, { parse_mode: 'HTML' });
             }
           } catch (notifyErr) {
             logger.error(`[CHECK STATUS] Notify error:`, notifyErr);
           }
         }
-        return { success: true, status: 'settlement', message: '✅ Pembayaran berhasil! Saldo Anda telah bertambah.' };
+        return { success: true, status: 'settlement', message: '✅ Pembayaran berhasil diterima.' };
       } else if (statusLower === 'pending') {
-        return { success: true, status: 'pending', message: '⏳ Pembayaran masih menunggu. Silakan selesaikan pembayaran.' };
+        return { success: true, status: 'pending', message: '⏳ Pembayaran masih menunggu.' };
       } else if (statusLower === 'expire' || statusLower === 'expired') {
         await Transaction.findOneAndUpdate(
           { txId, status: { $nin: ['completed', 'PAID', 'failed'] } },
           { $set: { status: 'failed', transaction_status: 'expire', updatedAt: new Date() } }
         );
-        return { success: true, status: 'expire', message: '❌ Transaksi ini telah kedaluwarsa (expired).' };
+        return { success: true, status: 'expire', message: '❌ Pembayaran telah kedaluwarsa.' };
       } else {
-        return { success: true, status: 'pending', message: '⏳ Pembayaran masih menunggu. Silakan selesaikan pembayaran.' };
+        return { success: true, status: 'pending', message: '⏳ Pembayaran masih menunggu.' };
       }
     } catch (err) {
+      const errResponseData = err.response ? err.response.data : {};
+      const errResponseStatus = err.response ? err.response.status : 'Network Error';
+      
       logger.error(`[CHECK STATUS] Error calling API status check for ${txId}:`, err.response ? err.response.data : err.message);
+
+      // Logging requirement:
+      logger.info(`[CHECK PAYMENT]\nInvoice: ${tx.txId}\nTransaction ID: ${tx.transaction_id || tx.txId}\nRequest: POST https://v1-gateway.autogopay.site/qris/status\nResponse: ${JSON.stringify(errResponseData)} (${errResponseStatus})\nStatus: error`);
+
+      // If already paid in our DB, we can return success regardless of current API check failures
       if (tx.status === 'completed' || tx.status === 'PAID') {
-        return { success: true, status: 'settlement', message: '✅ Pembayaran berhasil! Saldo Anda telah bertambah.' };
+        return { success: true, status: 'settlement', message: '✅ Pembayaran berhasil diterima.' };
       }
       return { success: false, status: 'error', message: `❌ Gagal memeriksa status pembayaran: ${err.message}` };
     }
@@ -293,7 +335,9 @@ Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
 
     logger.info(`[WEBHOOK MASUK] Event: ${event}, Status: ${status}, TransactionID: ${transactionId}, OrderID: ${orderId}`);
 
-    if (status === 'settlement' || status === 'success') {
+    const signature = headers['x-signature'] || headers['X-Signature'] || headers['x-signature-hex'] || headers['x-gopay-signature'] || 'N/A';
+
+    if (status === 'settlement' || status === 'success' || status === 'paid') {
       let tx = null;
       if (transactionId) {
         tx = await Transaction.findOne({ transaction_id: transactionId });
@@ -307,26 +351,39 @@ Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
         return { success: false, message: 'Transaction not found' };
       }
 
+      // Check user balance before processing
+      const userBefore = await db.getUser(tx.telegramId);
+      const saldoSebelum = userBefore ? (userBefore.balance || 0) : 0;
+
       const updatedTx = await Transaction.findOneAndUpdate(
         { txId: tx.txId, status: { $nin: ['completed', 'PAID'] } },
-        { $set: { status: 'completed', transaction_status: 'settlement', updatedAt: new Date() } },
+        { 
+          $set: { 
+            status: 'completed', 
+            transaction_status: status, 
+            paidAt: new Date(),
+            paymentResponse: JSON.stringify(body),
+            updatedAt: new Date() 
+          } 
+        },
         { new: true }
       );
 
       if (!updatedTx) {
         logger.info(`[WEBHOOK MASUK] Transaction ${tx.txId} already processed (atomic check).`);
+        // Logging requirement for already processed webhook:
+        logger.info(`[WEBHOOK]\nTransaction ID: ${transactionId || tx.transaction_id}\nInvoice: ${tx.txId}\nSignature: ${signature}\nStatus: ${status}\nSaldo Sebelum: ${saldoSebelum}\nSaldo Sesudah: ${saldoSebelum}`);
         return { success: true, message: 'Transaction already processed' };
       }
 
       const payTime = new Date();
       const updatedUser = await db.incrementUserBalance(tx.telegramId, tx.amount);
-      const newBalance = updatedUser.balance;
+      const saldoSesudah = updatedUser ? (updatedUser.balance || 0) : 0;
 
-      logger.info(`[SALDO BERTAMBAH] webhook credit success. Amount: ${tx.amount}, User: ${tx.telegramId}. New Balance: ${newBalance}`);
+      // Logging requirement:
+      logger.info(`[WEBHOOK]\nTransaction ID: ${transactionId || tx.transaction_id}\nInvoice: ${tx.txId}\nSignature: ${signature}\nStatus: ${status}\nSaldo Sebelum: ${saldoSebelum}\nSaldo Sesudah: ${saldoSesudah}`);
 
-      const formatIDR = (val) => new Intl.NumberFormat('id-ID', {
-        style: 'currency',
-        currency: 'IDR',
+      const formatIDR = (val) => 'Rp ' + new Intl.NumberFormat('id-ID', {
         minimumFractionDigits: 0
       }).format(val);
 
@@ -335,13 +392,12 @@ Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
         if (botInstance) {
           // User notify
           await botInstance.telegram.sendMessage(tx.telegramId, `
-✅ <b>Top Up Berhasil! (Webhook)</b>
+✅ <b>Pembayaran berhasil.</b>
 
-Saldo sebesar <b>${formatIDR(tx.amount)}</b> telah berhasil ditambahkan ke akun Anda.
+Saldo berhasil ditambahkan sebesar <b>${formatIDR(tx.amount)}</b>.
 
-💰 Saldo saat ini: <b>${formatIDR(newBalance)}</b>
-
-Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
+Saldo Anda sekarang:
+<b>${formatIDR(saldoSesudah)}</b>
 `, { parse_mode: 'HTML' });
 
           // Admin notify
@@ -351,7 +407,7 @@ Terima kasih telah bertransaksi! Gunakan /start untuk kembali ke menu utama.
 Status: 🟢 SUCCESS / SETTLEMENT
 User ID: <code>${tx.telegramId}</code>
 Order ID: <code>${tx.txId}</code>
-Transaction ID: <code>${transactionId}</code>
+Transaction ID: <code>${transactionId || tx.transaction_id}</code>
 Amount: <b>${formatIDR(tx.amount)}</b>
 Time: <code>${payTime.toISOString()}</code>
 `, { parse_mode: 'HTML' }).catch(err => {
