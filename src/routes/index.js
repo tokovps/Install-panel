@@ -34,12 +34,21 @@ async function handleAutoGoPayWebhook(req, res) {
   // Retrieve signature safely (case-insensitive check)
   const signature = headers['x-signature'] || headers['X-Signature'] || headers['x-signature-hex'] || headers['x-gopay-signature'];
 
-  logger.info(`[WEBHOOK MASUK] AutoGoPay Webhook Triggered`);
-  logger.info(`[WEBHOOK MASUK] METHOD: ${method}`);
-  logger.info(`[WEBHOOK MASUK] URL: ${url}`);
-  logger.info(`[WEBHOOK MASUK] Headers: ${JSON.stringify(headers, null, 2)}`);
-  logger.info(`[WEBHOOK MASUK] Body: ${JSON.stringify(body, null, 2)}`);
-  logger.info(`[WEBHOOK MASUK] Signature: ${signature}`);
+  // Retrieve raw body string for logging and verification
+  let rawBodyStr = '';
+  if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
+    rawBodyStr = req.rawBody.toString('utf8');
+  } else {
+    rawBodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});
+  }
+
+  // Exact logging as requested:
+  logger.info(`[WEBHOOK AUDIT] req.method: ${method}`);
+  logger.info(`[WEBHOOK AUDIT] req.url: ${url}`);
+  logger.info(`[WEBHOOK AUDIT] req.headers: ${JSON.stringify(headers, null, 2)}`);
+  logger.info(`[WEBHOOK AUDIT] raw body: ${rawBodyStr}`);
+  logger.info(`[WEBHOOK AUDIT] parsed body: ${JSON.stringify(body, null, 2)}`);
+  logger.info(`[WEBHOOK AUDIT] signature: ${signature}`);
 
   try {
     const settings = await db.getSettings();
@@ -48,7 +57,7 @@ async function handleAutoGoPayWebhook(req, res) {
     // Check if live API Key check is active and required
     if (gopay.apiKey && typeof gopay.apiKey === 'string' && gopay.apiKey.trim() !== '' && gopay.apiKey !== 'gopay_test_key_123' && gopay.enabled) {
       if (!signature) {
-        logger.warn('[WEBHOOK MASUK] Rejected: Missing X-Signature header.');
+        logger.warn('[WEBHOOK AUDIT] hasil verifikasi signature: FAILED (Missing signature header)');
         logger.info(`[WEBHOOK RESPON] Status: 401 | Message: Unauthorized: Missing X-Signature header`);
         return res.status(401).json({ 
           success: false, 
@@ -58,52 +67,44 @@ async function handleAutoGoPayWebhook(req, res) {
 
       const cleanSignature = String(signature).trim().toLowerCase();
 
-      // 1. Calculate signature based on Raw Body buffer if available
-      let rawBodyStr = '';
-      if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
-        rawBodyStr = req.rawBody.toString('utf8');
-      } else {
-        rawBodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});
-      }
-
       const hmacRaw = crypto.createHmac('sha256', gopay.apiKey);
       const calculatedSignatureRaw = hmacRaw.update(rawBodyStr).digest('hex').toLowerCase();
 
       // 2. Fallback check: Calculate signature on parsed JSON stringified body
       const hmacJson = crypto.createHmac('sha256', gopay.apiKey);
-      const calculatedSignatureJson = hmacJson.update(JSON.stringify(req.body || {})).digest('hex').toLowerCase();
+      const calculatedSignatureJson = hmacJson.update(JSON.stringify(body)).digest('hex').toLowerCase();
 
-      logger.info(`[WEBHOOK MASUK] Header Signature: "${cleanSignature}"`);
-      logger.info(`[WEBHOOK MASUK] Calculated rawBody Signature: "${calculatedSignatureRaw}"`);
-      logger.info(`[WEBHOOK MASUK] Calculated JSON Signature: "${calculatedSignatureJson}"`);
+      logger.info(`[WEBHOOK AUDIT] Header Signature: "${cleanSignature}"`);
+      logger.info(`[WEBHOOK AUDIT] Calculated rawBody Signature: "${calculatedSignatureRaw}"`);
+      logger.info(`[WEBHOOK AUDIT] Calculated JSON Signature: "${calculatedSignatureJson}"`);
 
       const isValidSignature = (cleanSignature === calculatedSignatureRaw) || (cleanSignature === calculatedSignatureJson);
 
       if (!isValidSignature) {
-        logger.warn('[WEBHOOK MASUK] Rejected: Signature verification failed.');
+        logger.warn('[WEBHOOK AUDIT] hasil verifikasi signature: FAILED (Invalid signature)');
         logger.info(`[WEBHOOK RESPON] Status: 401 | Message: Unauthorized: Invalid X-Signature verification`);
         return res.status(401).json({ 
           success: false, 
           error: 'Unauthorized: Invalid X-Signature verification' 
         });
       }
-      logger.info('[WEBHOOK MASUK] Signature validated successfully.');
+      logger.info('[WEBHOOK AUDIT] hasil verifikasi signature: SUCCESS');
     } else {
-      logger.info('[WEBHOOK MASUK] Bypassing signature validation (Running in test mode or API Key not configured / enabled).');
+      logger.info('[WEBHOOK AUDIT] hasil verifikasi signature: BYPASSED (Running in test mode or API Key not configured / enabled)');
     }
 
     // Process webhook logic
     const result = await AutoGoPayService.processWebhook(body);
     
-    logger.info('[WEBHOOK MASUK] Webhook processed successfully. Result:', result);
+    logger.info('[WEBHOOK AUDIT] Webhook processed successfully. Result:', result);
     logger.info(`[WEBHOOK RESPON] Status: 200 | Body: ${JSON.stringify(result)}`);
     return res.status(200).json(result);
 
   } catch (err) {
     // Log the entire error stack as requested
-    logger.error('[WEBHOOK MASUK] CRITICAL ERROR / EXCEPTION caught in route try-catch:', err);
+    logger.error('[WEBHOOK AUDIT] CRITICAL ERROR / EXCEPTION caught in route try-catch:', err);
     if (err.stack) {
-      logger.error(`[WEBHOOK MASUK] Stack Error: ${err.stack}`);
+      logger.error(`[WEBHOOK AUDIT] Stack Error: ${err.stack}`);
     }
 
     // Return 200 with success: false to signal handled exception, rather than server crashing
