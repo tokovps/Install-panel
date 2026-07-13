@@ -1,0 +1,6 @@
+{
+  "name": "Telegram AutoInstaller Bot",
+  "description": "A pure Telegram bot for automatic installation of MySQL and Pterodactyl panels on servers via SSH, with AutoGoPay QRIS top up integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
