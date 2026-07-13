@@ -195,9 +195,69 @@ export const CallbackRouter = {
             await answerCb(ctx, '❌ Gagal! API Key belum terpasang.', { show_alert: true });
             return;
           }
+
+          // Show elegant loading message in the chat
+          const { EditorEngine } = await import('./editor.js');
+          const loadingKb = Keyboard.create([], { showBack: false, showHome: false });
+          await EditorEngine.editMessage(ctx, {
+            text: `⏳ <b>Menghubungi server AutoGoPay...</b>\n\nMohon tunggu sebentar selagi bot memverifikasi kredensial dan menguji koneksi gateway secara real-time.`,
+            keyboard: loadingKb
+          }, user);
+
           const { AutoGoPayService } = await import('../services/autogopay.js');
           const testResult = await AutoGoPayService.testConnection(gopay.apiKey);
-          await answerCb(ctx, testResult.message, { show_alert: true });
+
+          let displayMsg = '';
+          if (testResult.success) {
+            displayMsg = `✅ <b>AutoGoPay berhasil terhubung.</b>\n\n` +
+                         `<b>Informasi:</b>\n` +
+                         `• API Status : <b>Online</b>\n` +
+                         `• API Key : <b>Valid</b>\n` +
+                         `• Gateway : <b>Connected</b>\n` +
+                         `• Response Time : <code>${testResult.responseTime} ms</code>`;
+          } else {
+            displayMsg = `${testResult.message}`;
+          }
+
+          const backKb = Keyboard.create([[['⬅️ Kembali ke AutoGoPay', 'admin:autogopay']]], { showBack: false, showHome: true });
+          await EditorEngine.editMessage(ctx, {
+            text: displayMsg,
+            keyboard: backKb
+          }, user);
+          return;
+        }
+
+        if (callbackData === 'admin:setgopay:test_webhook') {
+          if (user.role !== 'admin') {
+            await answerCb(ctx, '⚠️ Akses ditolak!', { show_alert: true });
+            return;
+          }
+          const gopay = settings.payment?.autogopay || {};
+          if (!gopay.apiKey) {
+            await answerCb(ctx, '❌ Gagal! API Key belum terpasang.', { show_alert: true });
+            return;
+          }
+          if (!gopay.webhook) {
+            await answerCb(ctx, '❌ Gagal! URL Webhook belum terpasang.', { show_alert: true });
+            return;
+          }
+
+          // Show elegant loading message in the chat
+          const { EditorEngine } = await import('./editor.js');
+          const loadingKb = Keyboard.create([], { showBack: false, showHome: false });
+          await EditorEngine.editMessage(ctx, {
+            text: `⏳ <b>Menjalankan Test Webhook...</b>\n\nMohon tunggu sebentar selagi bot mengirimkan payload uji coba ke endpoint webhook Anda dan memvalidasi signature secara real-time.`,
+            keyboard: loadingKb
+          }, user);
+
+          const { AutoGoPayService } = await import('../services/autogopay.js');
+          const testResult = await AutoGoPayService.testWebhook(gopay.apiKey, gopay.webhook);
+
+          const backKb = Keyboard.create([[['⬅️ Kembali ke AutoGoPay', 'admin:autogopay']]], { showBack: false, showHome: true });
+          await EditorEngine.editMessage(ctx, {
+            text: testResult.message,
+            keyboard: backKb
+          }, user);
           return;
         }
 

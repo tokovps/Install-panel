@@ -39,8 +39,11 @@ Atur kredensial integrasi gateway AutoGoPay untuk sistem top up otomatis menggun
         ['🧾 QRIS String', 'admin:setgopay:qris']
       ],
       [
-        ['🌐 Webhook', 'admin:setgopay:webhook'],
-        ['🧪 Test Koneksi', 'admin:setgopay:test']
+        ['🌐 Webhook', 'admin:setgopay:webhook']
+      ],
+      [
+        ['🧪 Test Koneksi', 'admin:setgopay:test'],
+        ['🧪 Test Webhook', 'admin:setgopay:test_webhook']
       ],
       [
         [gopay.enabled ? '🔴 Nonaktifkan AutoGoPay' : '🟢 Aktifkan AutoGoPay', 'admin:setgopay:toggle']

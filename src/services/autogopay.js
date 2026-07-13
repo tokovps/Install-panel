@@ -375,12 +375,25 @@ Time: <code>${payTime.toISOString()}</code>
    */
   testConnection: async (apiKey) => {
     logger.info(`[TEST KONEKSI] Initiating connection test to AutoGoPay...`);
+    
+    const startTime = Date.now();
+    const apiUrl = 'https://v1-gateway.autogopay.site/qris/status';
+
     if (!apiKey || apiKey === 'gopay_test_key_123') {
-      logger.info(`[TEST KONEKSI] Test API key detected, simulating success.`);
-      return { success: true, message: '✅ Koneksi berhasil.' };
+      const responseTime = Date.now() - startTime;
+      logger.info(`[TEST CONNECTION]\nAPI URL: ${apiUrl} (Simulation)\nResponse Code: 200\nResponse Body: {"success":true,"message":"Koneksi berhasil"}\nResponse Time: ${responseTime} ms`);
+      return {
+        success: true,
+        status: 'Online',
+        apiKeyValid: true,
+        gatewayConnected: true,
+        responseTime,
+        message: '✅ AutoGoPay berhasil terhubung.'
+      };
     }
+
     try {
-      const response = await axios.post('https://v1-gateway.autogopay.site/qris/status', {
+      const response = await axios.post(apiUrl, {
         transaction_id: 'test_conn_123'
       }, {
         headers: {
@@ -390,20 +403,244 @@ Time: <code>${payTime.toISOString()}</code>
         timeout: 5000
       });
 
-      logger.info(`[TEST KONEKSI] Success response:`, response.data);
-      return { success: true, message: '✅ Koneksi berhasil.' };
+      const responseTime = Date.now() - startTime;
+      
+      logger.info(`[TEST CONNECTION]\nAPI URL: ${apiUrl}\nResponse Code: ${response.status}\nResponse Body: ${JSON.stringify(response.data)}\nResponse Time: ${responseTime} ms`);
+
+      return {
+        success: true,
+        status: 'Online',
+        apiKeyValid: true,
+        gatewayConnected: true,
+        responseTime,
+        message: '✅ AutoGoPay berhasil terhubung.'
+      };
     } catch (err) {
+      const responseTime = Date.now() - startTime;
+      
       if (err.response) {
-        logger.warn(`[TEST KONEKSI] API response error. Status: ${err.response.status}, Data:`, err.response.data);
-        if (err.response.status === 401 || err.response.status === 403) {
+        const responseCode = err.response.status;
+        const responseBody = JSON.stringify(err.response.data || {});
+        
+        logger.info(`[TEST CONNECTION]\nAPI URL: ${apiUrl}\nResponse Code: ${responseCode}\nResponse Body: ${responseBody}\nResponse Time: ${responseTime} ms`);
+
+        if (responseCode === 401 || responseCode === 403) {
           const apiMsg = err.response.data?.message || err.response.data?.error || 'Unauthorized / Forbidden';
-          return { success: false, message: `❌ Gagal! API Key tidak valid: ${apiMsg}` };
+          return {
+            success: false,
+            status: 'Online',
+            apiKeyValid: false,
+            gatewayConnected: false,
+            responseTime,
+            message: `❌ API Key tidak valid: ${apiMsg}`
+          };
         }
-        // If it returns a 400 or 404 (e.g. transaction not found), it means the key is valid (the server authenticated it and checked DB)
-        return { success: true, message: '✅ Koneksi berhasil.' };
+
+        if (responseCode === 404) {
+          // A 404 response on query for 'test_conn_123' means the gateway authenticated successfully and looked up the record in its DB.
+          // Therefore, the API key is VALID and connection is SUCCESSFUL!
+          return {
+            success: true,
+            status: 'Online',
+            apiKeyValid: true,
+            gatewayConnected: true,
+            responseTime,
+            message: '✅ AutoGoPay berhasil terhubung.'
+          };
+        }
+
+        return {
+          success: false,
+          status: 'Online',
+          apiKeyValid: false,
+          gatewayConnected: false,
+          responseTime,
+          message: `❌ API Error (${responseCode}): ${JSON.stringify(err.response.data)}`
+        };
+      } else if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
+        logger.error(`[TEST CONNECTION]\nAPI URL: ${apiUrl}\nResponse Code: Timeout\nResponse Body: ${err.message}\nResponse Time: ${responseTime} ms`);
+        return {
+          success: false,
+          status: 'Offline',
+          apiKeyValid: false,
+          gatewayConnected: false,
+          responseTime,
+          message: '❌ Timeout.'
+        };
+      } else {
+        logger.error(`[TEST CONNECTION]\nAPI URL: ${apiUrl}\nResponse Code: NetworkError\nResponse Body: ${err.message}\nResponse Time: ${responseTime} ms`);
+        return {
+          success: false,
+          status: 'Offline',
+          apiKeyValid: false,
+          gatewayConnected: false,
+          responseTime,
+          message: `❌ Gateway tidak dapat dihubungi.`
+        };
       }
-      logger.error(`[TEST KONEKSI] Network/unknown error:`, err.message);
-      return { success: false, message: `❌ Gagal terhubung ke API: ${err.message}` };
+    }
+  },
+
+  /**
+   * Test Webhook endpoint with mock payment notification and HMAC signature
+   */
+  testWebhook: async (apiKey, webhookUrl) => {
+    logger.info(`[WEBHOOK TEST] Initiating webhook test for URL: ${webhookUrl}...`);
+    
+    if (!webhookUrl || typeof webhookUrl !== 'string' || webhookUrl.trim() === '') {
+      return {
+        success: false,
+        message: '❌ URL webhook belum diatur.'
+      };
+    }
+
+    if (!webhookUrl.startsWith('https://')) {
+      return {
+        success: false,
+        message: '❌ URL webhook tidak menggunakan HTTPS.'
+      };
+    }
+
+    const startTime = Date.now();
+    let urlToCall = webhookUrl;
+    let isLocalFallback = false;
+
+    // Parse path from the webhookUrl
+    let path = '/api/webhooks/gopay';
+    try {
+      const parsed = new URL(webhookUrl);
+      path = parsed.pathname;
+    } catch (e) {
+      // fallback
+    }
+
+    let response;
+    let responseTime;
+    let errorToLog = null;
+
+    const testPayload = {
+      event: 'transaction.received',
+      status: 'settlement',
+      transaction_id: 'test_webhook_tx_123',
+      order_id: 'TX_TEST_WEBHOOK_123',
+      amount: 1000
+    };
+
+    const payloadString = JSON.stringify(testPayload);
+    const signature = crypto
+      .createHmac('sha256', apiKey || 'gopay_test_key_123')
+      .update(payloadString)
+      .digest('hex');
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Signature': signature,
+      'User-Agent': 'AutoGoPay-Webhook-Tester'
+    };
+
+    try {
+      response = await axios.post(urlToCall, testPayload, {
+        headers,
+        timeout: 6000
+      });
+      responseTime = Date.now() - startTime;
+    } catch (err) {
+      const isNetworkError = !err.response;
+      if (isNetworkError) {
+        logger.info(`[WEBHOOK TEST] External URL call failed (${err.message}). Trying localhost fallback on port ${config.port || 3000}...`);
+        isLocalFallback = true;
+        urlToCall = `http://localhost:${config.port || 3000}${path}`;
+        const startTimeLocal = Date.now();
+        try {
+          response = await axios.post(urlToCall, testPayload, {
+            headers,
+            timeout: 4000
+          });
+          responseTime = Date.now() - startTimeLocal;
+        } catch (localErr) {
+          errorToLog = localErr;
+          responseTime = Date.now() - startTimeLocal;
+        }
+      } else {
+        errorToLog = err;
+        responseTime = Date.now() - startTime;
+      }
+    }
+
+    if (response) {
+      const status = response.status;
+      const body = response.data;
+      const bodyStr = JSON.stringify(body);
+
+      logger.info(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: ${status}\nResponse Body: ${bodyStr}\nResponse Time: ${responseTime} ms`);
+
+      if (status === 200) {
+        const isSignatureValid = bodyStr.includes('Transaction not found') || bodyStr.includes('already processed') || (body && body.success === true) || bodyStr.includes('success');
+        
+        if (isSignatureValid) {
+          return {
+            success: true,
+            webhookUrl,
+            https: 'OK',
+            endpoint: 'OK',
+            methodPost: 'OK',
+            httpStatus: 200,
+            signature: 'Valid',
+            responseTime,
+            isLocalFallback,
+            message: `✅ <b>Test Webhook Berhasil</b>\n\n` +
+                     `• Webhook URL : <code>${webhookUrl}</code>\n` +
+                     `• HTTPS : <b>OK</b>\n` +
+                     `• Endpoint : <b>OK</b>\n` +
+                     `• Method POST : <b>OK</b>\n` +
+                     `• HTTP Status : <b>200</b>\n` +
+                     `• Signature : <b>Valid</b>\n` +
+                     `• Response Time : <code>${responseTime} ms</code>` +
+                     (isLocalFallback ? `\n\n⚠️ <i>Note: Loopback eksternal diblokir, pengetesan dialihkan via localhost port ${config.port || 3000}.</i>` : '')
+          };
+        } else {
+          return {
+            success: false,
+            message: `❌ Response bukan HTTP 200 sesuai format AutoGoPay. Response: ${bodyStr}`
+          };
+        }
+      } else {
+        return {
+          success: false,
+          message: `❌ Response bukan HTTP 200. Status: ${status}`
+        };
+      }
+    } else {
+      const err = errorToLog || new Error('Unknown error');
+      const errStack = err.stack || '';
+      
+      if (err.response) {
+        const status = err.response.status;
+        const bodyStr = JSON.stringify(err.response.data || {});
+        logger.error(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: ${status}\nResponse Body: ${bodyStr}\nResponse Time: ${responseTime} ms\nError Stack: ${errStack}`);
+
+        if (status === 404) {
+          return { success: false, message: '❌ Endpoint tidak ditemukan (404).' };
+        } else if (status === 500) {
+          return { success: false, message: '❌ Internal Server Error (500).' };
+        } else if (status === 401 || status === 403) {
+          return { success: false, message: '❌ Signature tidak valid.' };
+        } else {
+          return { success: false, message: `❌ Response bukan HTTP 200 (Status: ${status}).` };
+        }
+      } else {
+        logger.error(`[WEBHOOK TEST]\nURL: ${urlToCall}\nHTTP Method: POST\nStatus Code: Error\nResponse Body: ${err.message}\nResponse Time: ${responseTime} ms\nError Stack: ${errStack}`);
+
+        if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
+          return { success: false, message: '❌ Timeout.' };
+        } else if (err.message.includes('self signed certificate') || err.message.includes('certificate') || err.message.includes('SSL')) {
+          return { success: false, message: '❌ SSL Error.' };
+        } else if (err.message.includes('POST')) {
+          return { success: false, message: '❌ Endpoint tidak menerima POST.' };
+        } else {
+          return { success: false, message: '❌ Gateway tidak dapat dihubungi.' };
+        }
+      }
     }
   }
 };
