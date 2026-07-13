@@ -94,7 +94,7 @@ async function handleAutoGoPayWebhook(req, res) {
     }
 
     // Process webhook logic
-    const result = await AutoGoPayService.processWebhook(body);
+    const result = await AutoGoPayService.processWebhook(body, headers);
     
     logger.info('[WEBHOOK AUDIT] Webhook processed successfully. Result:', result);
     logger.info(`[WEBHOOK RESPON] Status: 200 | Body: ${JSON.stringify(result)}`);

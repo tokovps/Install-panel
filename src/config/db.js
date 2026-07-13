@@ -15,6 +15,12 @@ export async function connectDB() {
     return false;
   }
 
+  // Validate scheme to prevent MongoParseError crashes
+  if (!config.mongodbUri.startsWith('mongodb://') && !config.mongodbUri.startsWith('mongodb+srv://')) {
+    logger.warn(`CRITICAL: MONGODB_URI has an invalid scheme ("${config.mongodbUri}"). It must start with "mongodb://" or "mongodb+srv://". Please configure a valid MongoDB connection string in the Settings menu.`);
+    return false;
+  }
+
   try {
     mongoose.set('strictQuery', true);
     await mongoose.connect(config.mongodbUri, {
@@ -98,6 +104,16 @@ export const db = {
   getAllUsers: async () => {
     const users = await User.find({});
     return users.map(u => u.toObject());
+  },
+
+  incrementUserBalance: async (telegramId, amount) => {
+    const id = parseInt(telegramId, 10);
+    const user = await User.findOneAndUpdate(
+      { telegramId: id },
+      { $inc: { balance: amount } },
+      { returnDocument: 'after', upsert: true }
+    );
+    return user.toObject();
   },
 
   // --- SETTINGS OPERATIONS ---

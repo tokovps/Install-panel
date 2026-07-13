@@ -124,7 +124,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
 
 // Enable graceful stop
 process.once('SIGINT', () => {
